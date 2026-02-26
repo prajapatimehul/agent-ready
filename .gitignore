@@ -1,0 +1,5 @@
+node_modules/
+dist/
+generated/
+coverage/
+.tmp-agent-ready-*/

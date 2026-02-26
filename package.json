@@ -1,0 +1,40 @@
+{
+  "name": "agent-ready-cli",
+  "version": "0.1.0",
+  "description": "Generate product CLIs from OpenAPI specs with local self-host testing support.",
+  "type": "module",
+  "bin": {
+    "agent-ready": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev:server": "node examples/petstore/server.js",
+    "generate:example": "node dist/index.js generate --spec examples/petstore/openapi.yaml --name pet-cli --out generated/pet-cli.js",
+    "generate:enterprise": "node dist/index.js generate --spec examples/enterprise/openapi.yaml --name enterprise-cli --out generated/enterprise-cli.js",
+    "e2e:example": "node generated/pet-cli.js pet list-pets --base-url http://localhost:4010 --output json",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down --remove-orphans",
+    "e2e:docker": "npm run docker:up && npm run generate:example && node generated/pet-cli.js pet list-pets --base-url http://localhost:4010 --output json; STATUS=$?; npm run docker:down; exit $STATUS"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "openapi",
+    "cli",
+    "generator",
+    "codegen"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.1",
+    "typescript": "^5.9.2",
+    "vitest": "^2.1.1"
+  }
+}

@@ -1,0 +1,189 @@
+openapi: 3.0.3
+info:
+  title: Enterprise Commerce API
+  version: 1.2.0
+servers:
+  - url: http://localhost:4020
+paths:
+  /customers:
+    get:
+      tags: [customers]
+      operationId: listCustomers
+      summary: List customers
+    post:
+      tags: [customers]
+      operationId: createCustomer
+      summary: Create customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /customers/{customerId}:
+    get:
+      tags: [customers]
+      operationId: getCustomer
+      parameters:
+        - $ref: '#/components/parameters/customerId'
+    patch:
+      tags: [customers]
+      operationId: updateCustomer
+      parameters:
+        - $ref: '#/components/parameters/customerId'
+      requestBody:
+        $ref: '#/components/requestBodies/customerPatch'
+    delete:
+      tags: [customers]
+      operationId: deleteCustomer
+      parameters:
+        - $ref: '#/components/parameters/customerId'
+  /customers/{customerId}/orders:
+    get:
+      tags: [customers, orders]
+      operationId: listCustomerOrders
+      parameters:
+        - $ref: '#/components/parameters/customerId'
+
+  /users:
+    get:
+      tags: [users]
+      operationId: listUsers
+    post:
+      tags: [users]
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /users/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/userId'
+    get:
+      tags: [users]
+      operationId: getUser
+    patch:
+      tags: [users]
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+    delete:
+      tags: [users]
+      operationId: deleteUser
+  /users/{userId}/roles:
+    get:
+      tags: [users]
+      operationId: listUserRoles
+      parameters:
+        - $ref: '#/components/parameters/userId'
+    post:
+      tags: [users]
+      operationId: assignUserRole
+      parameters:
+        - $ref: '#/components/parameters/userId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+
+  /orders:
+    get:
+      tags: [orders]
+      operationId: listOrders
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+    post:
+      tags: [orders]
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /orders/{orderId}:
+    parameters:
+      - $ref: '#/components/parameters/orderId'
+    get:
+      tags: [orders]
+      operationId: getOrder
+    patch:
+      tags: [orders]
+      operationId: updateOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+    delete:
+      tags: [orders]
+      operationId: cancelOrder
+  /orders/{orderId}/items:
+    get:
+      tags: [orders]
+      operationId: listOrderItems
+      parameters:
+        - $ref: '#/components/parameters/orderId'
+    post:
+      tags: [orders]
+      operationId: addOrderItem
+      parameters:
+        - $ref: '#/components/parameters/orderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+  /orders/{orderId}/pay:
+    post:
+      tags: [orders]
+      operationId: payOrder
+      parameters:
+        - $ref: '#/components/parameters/orderId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+
+components:
+  parameters:
+    customerId:
+      in: path
+      name: customerId
+      required: true
+      schema:
+        type: string
+    userId:
+      in: path
+      name: userId
+      required: true
+      schema:
+        type: string
+    orderId:
+      in: path
+      name: orderId
+      required: true
+      schema:
+        type: string
+  requestBodies:
+    customerPatch:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
