@@ -7,7 +7,7 @@ const METHODS: HttpMethod[] = ["get", "post", "put", "patch", "delete"];
 
 interface OpenApiParameter {
   name: string;
-  in: "path" | "query" | "header" | "cookie";
+  in: "path" | "query" | "header" | "cookie" | "body";
   required?: boolean;
   description?: string;
 }
@@ -38,11 +38,16 @@ interface OpenApiRef {
 
 interface OpenApiDocument {
   openapi?: string;
+  swagger?: string;
   info?: {
     title?: string;
     version?: string;
   };
   servers?: Array<{ url?: string }>;
+  host?: string;
+  basePath?: string;
+  schemes?: string[];
+  consumes?: string[];
   paths?: Record<string, OpenApiPathItem>;
   components?: {
     parameters?: Record<string, OpenApiParameter>;
@@ -152,7 +157,7 @@ function resolveParameter(document: OpenApiDocument, value: OpenApiParameter | O
   if (typeof candidate.name !== "string" || typeof candidate.in !== "string") {
     return null;
   }
-  if (candidate.in !== "path" && candidate.in !== "query" && candidate.in !== "header" && candidate.in !== "cookie") {
+  if (candidate.in !== "path" && candidate.in !== "query" && candidate.in !== "header" && candidate.in !== "cookie" && candidate.in !== "body") {
     return null;
   }
   return {
@@ -203,7 +208,7 @@ function mergeParameters(document: OpenApiDocument, pathParams: OpenApiPathItem[
 }
 
 function toCliParameter(param: OpenApiParameter): CliParameter | null {
-  if (param.in === "cookie") {
+  if (param.in === "cookie" || param.in === "body") {
     return null;
   }
 
@@ -227,10 +232,36 @@ export async function readOpenApiDocument(specPath: string): Promise<OpenApiDocu
   return JSON.parse(raw) as OpenApiDocument;
 }
 
+function hasSwagger2BodyParam(document: OpenApiDocument, pathParams: OpenApiPathItem["parameters"], opParams: OpenApiOperation["parameters"]): boolean {
+  const allParams = [...(pathParams ?? []), ...(opParams ?? [])];
+  for (const raw of allParams) {
+    const param = resolveParameter(document, raw);
+    if (param && param.in === "body") {
+      return true;
+    }
+  }
+  return false;
+}
+
+function deriveDefaultServer(document: OpenApiDocument): string | undefined {
+  if (document.servers?.[0]?.url) {
+    return document.servers[0].url;
+  }
+
+  if (document.host) {
+    const scheme = document.schemes?.[0] ?? "https";
+    const basePath = document.basePath ?? "";
+    return `${scheme}://${document.host}${basePath}`;
+  }
+
+  return undefined;
+}
+
 export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
   const operations: CliOperation[] = [];
   const paths = document.paths ?? {};
   const seenCommandNames = new Set<string>();
+  const globalConsumes = document.consumes ?? [];
 
   for (const [path, pathItem] of Object.entries(paths)) {
     for (const method of METHODS) {
@@ -245,7 +276,10 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
       const commandName = uniqueCommandName(groupName, baseCommand, seenCommandNames, method);
       const params = mergeParameters(document, pathItem.parameters, operation.parameters);
       const requestBody = resolveRequestBody(document, operation.requestBody);
-      const hasJsonBody = Boolean(requestBody?.content?.["application/json"]);
+      const hasOas3Body = Boolean(requestBody?.content?.["application/json"]);
+      const hasSwagger2Body = hasSwagger2BodyParam(document, pathItem.parameters, operation.parameters)
+        && globalConsumes.includes("application/json");
+      const hasJsonBody = hasOas3Body || hasSwagger2Body;
 
       operations.push({
         operationId,
@@ -280,7 +314,7 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
   return {
     title: document.info?.title ?? "Generated API CLI",
     version: document.info?.version ?? "0.0.0",
-    defaultServer: document.servers?.[0]?.url,
+    defaultServer: deriveDefaultServer(document),
     operations
   };
 }
