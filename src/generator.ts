@@ -1,9 +1,15 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { CliOperation, CliParameter, CliSpec } from "./types.js";
+import type { CliAuth, CliOperation, CliParameter, CliSpec } from "./types.js";
 
 function escapeForSingleQuote(value: string): string {
-  return value.replace(/'/g, "\\'");
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 function requiredOptionMethod(param: CliParameter): string {
@@ -18,12 +24,37 @@ function renderParamsArray(params: CliParameter[]): string {
   const lines = params.map((param) => {
     return `      { name: '${escapeForSingleQuote(param.name)}', cliName: '${escapeForSingleQuote(
       param.cliName
-    )}', in: '${param.in}', required: ${param.required} }`;
+    )}', in: '${param.in}', required: ${param.required}, isArray: ${param.isArray} }`;
   });
 
   return `[
 ${lines.join(",\n")}
     ]`;
+}
+
+function renderAuth(auth: CliAuth | undefined): string {
+  if (!auth) {
+    return "undefined";
+  }
+
+  const lines: string[] = [];
+  if (auth.bearerHeaderName) {
+    lines.push(`bearerHeaderName: '${escapeForSingleQuote(auth.bearerHeaderName)}'`);
+  }
+  if (auth.basic) {
+    lines.push("basic: true");
+  }
+  if (auth.apiKey) {
+    lines.push(
+      `apiKey: { name: '${escapeForSingleQuote(auth.apiKey.name)}', in: '${auth.apiKey.in}' }`
+    );
+  }
+
+  if (lines.length === 0) {
+    return "undefined";
+  }
+
+  return `{ ${lines.join(", ")} }`;
 }
 
 function renderOperation(op: CliOperation): string {
@@ -35,7 +66,7 @@ function renderOperation(op: CliOperation): string {
     })
     .join("\n");
 
-  const bodyOption = op.hasJsonBody ? "\n    command.option('--body <json>', 'JSON request body string');" : "";
+  const bodyOption = op.hasBody ? "\n    command.option('--body <value>', 'Request body string');" : "";
   const summary = escapeForSingleQuote(op.summary ?? `${op.method.toUpperCase()} ${op.path}`);
 
   return `
@@ -49,7 +80,9 @@ ${optionLines}${bodyOption}
         operationId: '${escapeForSingleQuote(op.operationId)}',
         method: '${op.method.toUpperCase()}',
         path: '${escapeForSingleQuote(op.path)}',
-        hasJsonBody: ${op.hasJsonBody},
+        hasBody: ${op.hasBody},
+        requestContentType: ${op.requestContentType ? `'${escapeForSingleQuote(op.requestContentType)}'` : "undefined"},
+        auth: ${renderAuth(op.auth)},
         parameters: ${renderParamsArray(op.parameters)}
       };
 
@@ -164,6 +197,11 @@ function resolveRuntimeSettings(globalOptions) {
     ?? profile.apiKey
     ?? null;
 
+  const basic = globalOptions.basic
+    ?? process.env.AGENT_READY_BASIC
+    ?? profile.basic
+    ?? null;
+
   const output = globalOptions.output
     ?? process.env.AGENT_READY_OUTPUT
     ?? profile.output
@@ -173,6 +211,7 @@ function resolveRuntimeSettings(globalOptions) {
     baseUrl,
     token,
     apiKey,
+    basic,
     output
   };
 }
@@ -189,29 +228,76 @@ function normalizePath(pathTemplate, commandOptions, parameters) {
   return path;
 }
 
-function buildQuery(parameters, commandOptions) {
+function appendQueryValues(searchParams, name, value, isArray) {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      appendQueryValues(searchParams, name, item, isArray);
+    }
+    return;
+  }
+
+  if (isArray && typeof value === 'string') {
+    for (const item of value.split(',').map((part) => part.trim()).filter(Boolean)) {
+      searchParams.append(name, item);
+    }
+    return;
+  }
+
+  searchParams.append(name, String(value));
+}
+
+function buildQuery(operation, parameters, commandOptions, runtime) {
   const searchParams = new URLSearchParams();
 
   for (const param of parameters.filter((p) => p.in === 'query')) {
     const value = getOptionValue(commandOptions, param.cliName);
-    if (value !== undefined) {
-      searchParams.append(param.name, String(value));
-    }
+    appendQueryValues(searchParams, param.name, value, param.isArray);
+  }
+
+  if (runtime.apiKey && operation.auth?.apiKey && operation.auth.apiKey.in === 'query') {
+    searchParams.append(operation.auth.apiKey.name, runtime.apiKey);
   }
 
   const queryString = searchParams.toString();
   return queryString ? '?' + queryString : '';
 }
 
-function buildHeaders(parameters, commandOptions, runtime) {
-  const headers = { Accept: 'application/json' };
+function encodeBasicCredentials(value) {
+  return Buffer.from(value, 'utf8').toString('base64');
+}
 
-  if (runtime.token) {
-    headers.Authorization = 'Bearer ' + runtime.token;
+function appendCookie(cookies, name, value) {
+  if (value === undefined || value === null) {
+    return;
+  }
+  cookies.push(name + '=' + encodeURIComponent(String(value)));
+}
+
+function buildHeaders(operation, parameters, commandOptions, runtime) {
+  const headers = { Accept: 'application/json' };
+  const cookiePairs = [];
+
+  if (runtime.basic && operation.auth?.basic) {
+    headers.Authorization = 'Basic ' + encodeBasicCredentials(runtime.basic);
+  } else if (runtime.token) {
+    const headerName = operation.auth?.bearerHeaderName ?? 'Authorization';
+    headers[headerName] = 'Bearer ' + runtime.token;
   }
 
   if (runtime.apiKey) {
-    headers['X-API-Key'] = runtime.apiKey;
+    if (operation.auth?.apiKey) {
+      if (operation.auth.apiKey.in === 'header') {
+        headers[operation.auth.apiKey.name] = runtime.apiKey;
+      } else if (operation.auth.apiKey.in === 'cookie') {
+        appendCookie(cookiePairs, operation.auth.apiKey.name, runtime.apiKey);
+      }
+    } else {
+      headers['X-API-Key'] = runtime.apiKey;
+    }
   }
 
   for (const param of parameters.filter((p) => p.in === 'header')) {
@@ -219,6 +305,17 @@ function buildHeaders(parameters, commandOptions, runtime) {
     if (value !== undefined) {
       headers[param.name] = String(value);
     }
+  }
+
+  for (const param of parameters.filter((p) => p.in === 'cookie')) {
+    const value = getOptionValue(commandOptions, param.cliName);
+    if (value !== undefined) {
+      appendCookie(cookiePairs, param.name, value);
+    }
+  }
+
+  if (cookiePairs.length > 0) {
+    headers.Cookie = cookiePairs.join('; ');
   }
 
   return headers;
@@ -250,8 +347,8 @@ async function executeOperation(operation, commandOptions, globalOptions) {
   }
 
   const path = normalizePath(operation.path, commandOptions, operation.parameters);
-  const query = buildQuery(operation.parameters, commandOptions);
-  const headers = buildHeaders(operation.parameters, commandOptions, runtime);
+  const query = buildQuery(operation, operation.parameters, commandOptions, runtime);
+  const headers = buildHeaders(operation, operation.parameters, commandOptions, runtime);
 
   const url = runtime.baseUrl.replace(/\\/$/, '') + path + query;
   const init = {
@@ -259,8 +356,8 @@ async function executeOperation(operation, commandOptions, globalOptions) {
     headers
   };
 
-  if (operation.hasJsonBody && commandOptions.body) {
-    headers['Content-Type'] = 'application/json';
+  if (operation.hasBody && commandOptions.body !== undefined) {
+    headers['Content-Type'] = operation.requestContentType ?? 'application/json';
     init.body = commandOptions.body;
   }
 
@@ -294,6 +391,7 @@ program
   .option('--base-url <url>', 'Base API URL')
   .option('--token <token>', 'Bearer token')
   .option('--api-key <key>', 'API key')
+  .option('--basic <userpass>', 'Basic auth credentials as user:pass')
   .option('--output <format>', 'Output format: json|pretty', 'pretty')
   .option('--config <path>', 'Path to config JSON with profiles')
   .option('--profile <name>', 'Profile name from config JSON');

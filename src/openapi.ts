@@ -1,15 +1,20 @@
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import { parse as parseYaml } from "yaml";
-import type { CliOperation, CliParameter, CliSpec, HttpMethod } from "./types.js";
+import type { CliAuth, CliOperation, CliParameter, CliSpec, HttpMethod } from "./types.js";
 
-const METHODS: HttpMethod[] = ["get", "post", "put", "patch", "delete"];
+const METHODS: HttpMethod[] = ["get", "post", "put", "patch", "delete", "head", "options"];
+
+type ParameterLocation = "path" | "query" | "header" | "cookie" | "body";
 
 interface OpenApiParameter {
   name: string;
-  in: "path" | "query" | "header" | "cookie" | "body";
+  in: ParameterLocation;
   required?: boolean;
   description?: string;
+  schema?: {
+    type?: string;
+  };
 }
 
 interface OpenApiOperation {
@@ -17,10 +22,13 @@ interface OpenApiOperation {
   tags?: string[];
   summary?: string;
   description?: string;
+  consumes?: string[];
   parameters?: Array<OpenApiParameter | OpenApiRef>;
   requestBody?: {
     content?: Record<string, unknown>;
+    required?: boolean;
   } | OpenApiRef;
+  security?: Array<Record<string, string[]>>;
 }
 
 interface OpenApiPathItem {
@@ -30,6 +38,8 @@ interface OpenApiPathItem {
   put?: OpenApiOperation;
   patch?: OpenApiOperation;
   delete?: OpenApiOperation;
+  head?: OpenApiOperation;
+  options?: OpenApiOperation;
 }
 
 interface OpenApiRef {
@@ -48,11 +58,21 @@ interface OpenApiDocument {
   basePath?: string;
   schemes?: string[];
   consumes?: string[];
+  security?: Array<Record<string, string[]>>;
   paths?: Record<string, OpenApiPathItem>;
+  securityDefinitions?: Record<string, OpenApiSecurityScheme>;
   components?: {
     parameters?: Record<string, OpenApiParameter>;
     requestBodies?: Record<string, { content?: Record<string, unknown> }>;
+    securitySchemes?: Record<string, OpenApiSecurityScheme>;
   };
+}
+
+interface OpenApiSecurityScheme {
+  type?: string;
+  name?: string;
+  in?: "header" | "query" | "cookie";
+  scheme?: string;
 }
 
 function toKebabCase(value: string): string {
@@ -162,9 +182,10 @@ function resolveParameter(document: OpenApiDocument, value: OpenApiParameter | O
   }
   return {
     name: candidate.name,
-    in: candidate.in,
+    in: candidate.in as ParameterLocation,
     required: candidate.required,
-    description: candidate.description
+    description: candidate.description,
+    schema: candidate.schema
   };
 }
 
@@ -208,7 +229,7 @@ function mergeParameters(document: OpenApiDocument, pathParams: OpenApiPathItem[
 }
 
 function toCliParameter(param: OpenApiParameter): CliParameter | null {
-  if (param.in === "cookie" || param.in === "body") {
+  if (param.in === "body") {
     return null;
   }
 
@@ -217,6 +238,7 @@ function toCliParameter(param: OpenApiParameter): CliParameter | null {
     cliName: toKebabCase(param.name),
     in: param.in,
     required: Boolean(param.required),
+    isArray: param.schema?.type === "array" || param.name.endsWith("[]"),
     description: param.description
   };
 }
@@ -243,6 +265,111 @@ function hasSwagger2BodyParam(document: OpenApiDocument, pathParams: OpenApiPath
   return false;
 }
 
+function getPreferredContentType(contentTypes: string[]): string | undefined {
+  if (contentTypes.length === 0) {
+    return undefined;
+  }
+
+  const exactJson = contentTypes.find((value) => value.toLowerCase() === "application/json");
+  if (exactJson) {
+    return exactJson;
+  }
+
+  const jsonLike = contentTypes.find((value) => value.toLowerCase().includes("json"));
+  if (jsonLike) {
+    return jsonLike;
+  }
+
+  return contentTypes[0];
+}
+
+function resolveRequestContentType(
+  requestBody: { content?: Record<string, unknown> } | null,
+  hasSwagger2Body: boolean,
+  operationConsumes: string[] | undefined,
+  globalConsumes: string[]
+): { hasBody: boolean; requestContentType?: string } {
+  const requestBodyContentTypes = requestBody ? Object.keys(requestBody.content ?? {}) : [];
+  const oas3ContentType = getPreferredContentType(requestBodyContentTypes);
+  if (oas3ContentType) {
+    return {
+      hasBody: true,
+      requestContentType: oas3ContentType
+    };
+  }
+
+  if (!hasSwagger2Body) {
+    return { hasBody: false };
+  }
+
+  const swaggerConsumes = operationConsumes ?? globalConsumes;
+  return {
+    hasBody: true,
+    requestContentType: getPreferredContentType(swaggerConsumes) ?? "application/json"
+  };
+}
+
+type SecuritySchemeMap = Record<string, OpenApiSecurityScheme>;
+
+function collectSecuritySchemes(document: OpenApiDocument): SecuritySchemeMap {
+  const fromComponents = document.components?.securitySchemes ?? {};
+  const fromSwagger2 = document.securityDefinitions ?? {};
+  return {
+    ...fromSwagger2,
+    ...fromComponents
+  };
+}
+
+function resolveOperationAuth(
+  document: OpenApiDocument,
+  operation: OpenApiOperation,
+  securitySchemes: SecuritySchemeMap
+): CliAuth | undefined {
+  const allRequirements = operation.security ?? document.security;
+  if (!allRequirements || allRequirements.length === 0) {
+    return undefined;
+  }
+
+  for (const requirement of allRequirements) {
+    if (Object.keys(requirement).length === 0) {
+      continue;
+    }
+
+    const auth: CliAuth = {};
+    for (const schemeName of Object.keys(requirement)) {
+      const scheme = securitySchemes[schemeName];
+      if (!scheme) {
+        continue;
+      }
+
+      const type = scheme.type?.toLowerCase();
+      if (type === "http") {
+        const httpScheme = scheme.scheme?.toLowerCase();
+        if (httpScheme === "bearer") {
+          auth.bearerHeaderName = "Authorization";
+        } else if (httpScheme === "basic") {
+          auth.basic = true;
+        }
+      } else if (type === "basic") {
+        auth.basic = true;
+      } else if (type === "apiKey" || type === "apikey") {
+        if (scheme.name && (scheme.in === "header" || scheme.in === "query" || scheme.in === "cookie")) {
+          auth.apiKey = {
+            name: scheme.name,
+            in: scheme.in
+          };
+        }
+      }
+    }
+
+    if (auth.bearerHeaderName || auth.basic || auth.apiKey) {
+      return auth;
+    }
+  }
+
+  return undefined;
+}
+
 function deriveDefaultServer(document: OpenApiDocument): string | undefined {
   if (document.servers?.[0]?.url) {
     return document.servers[0].url;
@@ -262,6 +389,7 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
   const paths = document.paths ?? {};
   const seenCommandNames = new Set<string>();
   const globalConsumes = document.consumes ?? [];
+  const securitySchemes = collectSecuritySchemes(document);
 
   for (const [path, pathItem] of Object.entries(paths)) {
     for (const method of METHODS) {
@@ -276,10 +404,9 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
       const commandName = uniqueCommandName(groupName, baseCommand, seenCommandNames, method);
       const params = mergeParameters(document, pathItem.parameters, operation.parameters);
       const requestBody = resolveRequestBody(document, operation.requestBody);
-      const hasOas3Body = Boolean(requestBody?.content?.["application/json"]);
-      const hasSwagger2Body = hasSwagger2BodyParam(document, pathItem.parameters, operation.parameters)
-        && globalConsumes.includes("application/json");
-      const hasJsonBody = hasOas3Body || hasSwagger2Body;
+      const hasSwagger2Body = hasSwagger2BodyParam(document, pathItem.parameters, operation.parameters);
+      const requestBodyInfo = resolveRequestContentType(requestBody, hasSwagger2Body, operation.consumes, globalConsumes);
+      const auth = resolveOperationAuth(document, operation, securitySchemes);
 
       operations.push({
         operationId,
@@ -289,7 +416,9 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
         path,
         tags: operation.tags ?? [],
         summary: operation.summary ?? operation.description,
-        hasJsonBody,
+        hasBody: requestBodyInfo.hasBody,
+        requestContentType: requestBodyInfo.requestContentType,
+        auth,
         parameters: params
       });
     }
