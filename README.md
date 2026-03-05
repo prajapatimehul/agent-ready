@@ -1,7 +1,6 @@
 # Agent Ready
 
 [![CI](https://github.com/prajapatimehul/agent-ready/actions/workflows/ci.yml/badge.svg)](https://github.com/prajapatimehul/agent-ready/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/@mehul_85345/agent-ready.svg)](https://www.npmjs.com/package/@mehul_85345/agent-ready)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Generate **agent-first CLIs** from any OpenAPI spec — with built-in safety rails, schema introspection, and MCP server generation.
@@ -30,16 +29,10 @@ Test at least 10-15 operations across different groups. Report which ones work a
 
 ---
 
-## Install
-
-```bash
-npm install -g @mehul_85345/agent-ready
-```
-
 One command turns your API spec into a fully-featured CLI that both humans and AI agents can use:
 
 ```bash
-npx @mehul_85345/agent-ready generate --spec openapi.yaml --name my-cli --out my-cli.js
+npx agent-ready generate --spec openapi.yaml --name my-cli --out my-cli.js
 ```
 
 ## Why Agent-First?
