@@ -1,6 +1,7 @@
 # Agent Ready
 
 [![CI](https://github.com/prajapatimehul/agent-ready/actions/workflows/ci.yml/badge.svg)](https://github.com/prajapatimehul/agent-ready/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/agent-ready-cli.svg)](https://www.npmjs.com/package/agent-ready-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Generate **agent-first CLIs** from any OpenAPI spec — with built-in safety rails, schema introspection, and MCP server generation.
@@ -10,16 +11,15 @@ Generate **agent-first CLIs** from any OpenAPI spec — with built-in safety rai
 Drop this into Claude Code, Codex, or any coding agent. Replace the placeholder with your OpenAPI spec path or URL. The agent will do everything — no docs needed.
 
 ```
-Clone https://github.com/prajapatimehul/agent-ready and generate a CLI from my OpenAPI spec.
+Generate a CLI from my OpenAPI spec using agent-ready-cli.
 
 Steps:
-1. git clone https://github.com/prajapatimehul/agent-ready && cd agent-ready && npm install && npm run build
-2. Generate CLI: node dist/index.js generate --spec <PATH_TO_MY_OPENAPI_SPEC> --name my-cli --out generated/my-cli.js
-3. Run: node generated/my-cli.js --help-json   (to see all available operations)
-4. Test every API group using: node generated/my-cli.js <group> <command> --base-url <MY_API_URL> --output json
-5. Use --dry-run on mutating operations (POST/PUT/PATCH/DELETE) before executing
-6. Use schema <group.command> to inspect parameters and body schema for any operation
-7. Use --fields to limit response size and --sanitize for safety
+1. npx agent-ready-cli generate --spec <PATH_TO_MY_OPENAPI_SPEC> --name my-cli --out generated/my-cli.js
+2. Run: node generated/my-cli.js --help-json   (to see all available operations)
+3. Test every API group using: node generated/my-cli.js <group> <command> --base-url <MY_API_URL> --output json
+4. Use --dry-run on mutating operations (POST/PUT/PATCH/DELETE) before executing
+5. Use schema <group.command> to inspect parameters and body schema for any operation
+6. Use --fields to limit response size and --sanitize for safety
 
 Auth options: --token <bearer>, --api-key <key>, --basic <user:pass>
 Or set env vars: AGENT_READY_TOKEN, AGENT_READY_API_KEY, AGENT_READY_BASE_URL
@@ -29,10 +29,16 @@ Test at least 10-15 operations across different groups. Report which ones work a
 
 ---
 
+## Install
+
+```bash
+npm install -g agent-ready-cli
+```
+
 One command turns your API spec into a fully-featured CLI that both humans and AI agents can use:
 
 ```bash
-npx agent-ready generate --spec openapi.yaml --name my-cli --out my-cli.js
+npx agent-ready-cli generate --spec openapi.yaml --name my-cli --out my-cli.js
 ```
 
 ## Why Agent-First?
@@ -78,38 +84,28 @@ OpenAPI specs for all 11 are included in `examples/` so you can reproduce these 
 ## Quick Start
 
 ```bash
-npm install
-npm run build
+npx agent-ready-cli generate --spec openapi.yaml --name my-api --out my-api.js
 ```
 
-Generate a CLI from the included Petstore spec:
+Try the included Petstore spec:
 
 ```bash
-npm run generate:example
-```
-
-Start the local test API and try it:
-
-```bash
-npm run dev:server
-# In another terminal:
-node generated/pet-cli.js pet list-pets --base-url http://localhost:4010 --output json
-node generated/pet-cli.js pet create-pet --body '{"name":"Nova","species":"dog"}' --base-url http://localhost:4010
+npx agent-ready-cli generate --spec examples/petstore/openapi.yaml --name pet-cli --out generated/pet-cli.js
 ```
 
 ## Generate from Any OpenAPI Spec
 
 ```bash
 # From a local file
-node dist/index.js generate --spec path/to/openapi.yaml --name my-api --out generated/my-api.js
+npx agent-ready-cli generate --spec path/to/openapi.yaml --name my-api --out generated/my-api.js
 
 # From any of the included real-world specs
-node dist/index.js generate --spec examples/gitea/openapi.json --name gitea --out generated/gitea.js
-node dist/index.js generate --spec examples/mattermost/openapi.yaml --name mattermost --out generated/mattermost.js
-node dist/index.js generate --spec examples/killbill/swagger.json --name killbill --out generated/killbill.js
-node dist/index.js generate --spec examples/chatwoot/openapi.json --name chatwoot --out generated/chatwoot.js
-node dist/index.js generate --spec examples/coolify/openapi.yaml --name coolify --out generated/coolify.js
-node dist/index.js generate --spec examples/growthbook/openapi.yaml --name growthbook --out generated/growthbook.js
+npx agent-ready-cli generate --spec examples/gitea/openapi.json --name gitea --out generated/gitea.js
+npx agent-ready-cli generate --spec examples/mattermost/openapi.yaml --name mattermost --out generated/mattermost.js
+npx agent-ready-cli generate --spec examples/killbill/swagger.json --name killbill --out generated/killbill.js
+npx agent-ready-cli generate --spec examples/chatwoot/openapi.json --name chatwoot --out generated/chatwoot.js
+npx agent-ready-cli generate --spec examples/coolify/openapi.yaml --name coolify --out generated/coolify.js
+npx agent-ready-cli generate --spec examples/growthbook/openapi.yaml --name growthbook --out generated/growthbook.js
 ```
 
 Supports **OpenAPI 3.0/3.1** and **Swagger 2.0** specs in YAML or JSON.
@@ -186,7 +182,7 @@ Every generated CLI rejects:
 Generate a Model Context Protocol server for use with Claude, Cursor, and other MCP-compatible agents:
 
 ```bash
-node dist/index.js generate --spec openapi.yaml --name my-api --out generated/my-api.js --mcp generated/my-api-mcp.js
+npx agent-ready-cli generate --spec openapi.yaml --name my-api --out generated/my-api.js --mcp generated/my-api-mcp.js
 ```
 
 The MCP server exposes every operation as a typed JSON-RPC tool over stdio — no shell escaping, no argument parsing ambiguity.
