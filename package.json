@@ -1,6 +1,6 @@
 {
   "name": "agent-ready-cli",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Generate agent-first CLIs and MCP servers from any OpenAPI spec — with safety rails, schema introspection, and prompt-injection sanitization.",
   "type": "module",
   "bin": {
