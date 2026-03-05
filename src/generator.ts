@@ -113,7 +113,7 @@ ${optionLines}${bodyOption}
 `;
 }
 
-function renderGroups(operations: CliOperation[]): string {
+function renderGroups(operations: CliOperation[]): { code: string; groupNames: Set<string> } {
   const byGroup = new Map<string, CliOperation[]>();
   for (const operation of operations) {
     const current = byGroup.get(operation.groupName) ?? [];
@@ -121,7 +121,7 @@ function renderGroups(operations: CliOperation[]): string {
     byGroup.set(operation.groupName, current);
   }
 
-  return [...byGroup.entries()]
+  const code = [...byGroup.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([groupName, groupOperations]) => {
       const description = `${groupName} operations`;
@@ -136,6 +136,8 @@ ${renderedOperations}
 `;
     })
     .join("\n");
+
+  return { code, groupNames: new Set(byGroup.keys()) };
 }
 
 function renderSchemaCommand(groupNames: Set<string>): string {
@@ -161,8 +163,7 @@ function renderSchemaCommand(groupNames: Set<string>): string {
 
 function renderProgram(spec: CliSpec, cliName: string): string {
   const registry = renderOperationRegistry(spec.operations);
-  const groups = renderGroups(spec.operations);
-  const groupNames = new Set(spec.operations.map((op) => op.groupName));
+  const { code: groups, groupNames } = renderGroups(spec.operations);
   const schemaCommand = renderSchemaCommand(groupNames);
   const defaultServer = spec.defaultServer ? `'${escapeForSingleQuote(spec.defaultServer)}'` : "undefined";
 
