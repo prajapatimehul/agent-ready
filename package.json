@@ -1,13 +1,21 @@
 {
-  "name": "agent-ready-cli",
-  "version": "0.1.0",
-  "description": "Generate product CLIs from OpenAPI specs with local self-host testing support.",
+  "name": "agent-ready",
+  "version": "1.0.0",
+  "description": "Generate agent-first CLIs and MCP servers from any OpenAPI spec — with safety rails, schema introspection, and prompt-injection sanitization.",
   "type": "module",
   "bin": {
     "agent-ready": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "examples/petstore",
+    "examples/enterprise",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "dev:server": "node examples/petstore/server.js",
@@ -18,6 +26,15 @@
     "docker:down": "docker compose down --remove-orphans",
     "e2e:docker": "npm run docker:up && npm run generate:example && node generated/pet-cli.js pet list-pets --base-url http://localhost:4010 --output json; STATUS=$?; npm run docker:down; exit $STATUS"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prajapatimehul/agent-ready.git"
+  },
+  "homepage": "https://github.com/prajapatimehul/agent-ready",
+  "bugs": {
+    "url": "https://github.com/prajapatimehul/agent-ready/issues"
+  },
+  "author": "Mehul Prajapati",
   "engines": {
     "node": ">=20"
   },
@@ -25,7 +42,15 @@
     "openapi",
     "cli",
     "generator",
-    "codegen"
+    "codegen",
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "swagger",
+    "openapi-generator",
+    "cli-generator",
+    "mcp-server",
+    "agent-first"
   ],
   "license": "MIT",
   "dependencies": {
