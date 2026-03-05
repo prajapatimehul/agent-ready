@@ -64,8 +64,9 @@ describe("OpenAPI normalization", () => {
       }
     });
 
-    expect(spec.defaultServer).toBe("http://localhost:8080/api/v1");
+    expect(spec.defaultServer).toBe("http://localhost:8080");
     expect(spec.operations).toHaveLength(1);
+    expect(spec.operations[0]?.path).toBe("/api/v1/submit/{id}");
     expect(spec.operations[0]?.hasBody).toBe(true);
     expect(spec.operations[0]?.requestContentType).toBe("application/x-www-form-urlencoded");
     expect(spec.operations[0]?.auth?.apiKey).toEqual({ name: "api_key", in: "query" });

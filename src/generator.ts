@@ -138,10 +138,11 @@ ${renderedOperations}
     .join("\n");
 }
 
-function renderSchemaCommand(): string {
+function renderSchemaCommand(groupNames: Set<string>): string {
+  const cmdName = groupNames.has('schema') ? 'op-schema' : 'schema';
   return `
 {
-  const schemaCmd = program.command('schema');
+  const schemaCmd = program.command('${cmdName}');
   schemaCmd.description('Print operation metadata as JSON');
   schemaCmd.argument('<operation>', 'Operation as group.command');
   schemaCmd.action((name) => {
@@ -161,7 +162,8 @@ function renderSchemaCommand(): string {
 function renderProgram(spec: CliSpec, cliName: string): string {
   const registry = renderOperationRegistry(spec.operations);
   const groups = renderGroups(spec.operations);
-  const schemaCommand = renderSchemaCommand();
+  const groupNames = new Set(spec.operations.map((op) => op.groupName));
+  const schemaCommand = renderSchemaCommand(groupNames);
   const defaultServer = spec.defaultServer ? `'${escapeForSingleQuote(spec.defaultServer)}'` : "undefined";
 
   return `#!/usr/bin/env node

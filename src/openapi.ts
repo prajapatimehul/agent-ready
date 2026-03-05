@@ -530,8 +530,7 @@ function deriveDefaultServer(document: OpenApiDocument): string | undefined {
 
   if (document.host) {
     const scheme = document.schemes?.[0] ?? "https";
-    const basePath = document.basePath ?? "";
-    return `${scheme}://${document.host}${basePath}`;
+    return `${scheme}://${document.host}`;
   }
 
   return undefined;
@@ -543,6 +542,7 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
   const seenCommandNames = new Set<string>();
   const globalConsumes = document.consumes ?? [];
   const securitySchemes = collectSecuritySchemes(document);
+  const basePath = (document.swagger && document.basePath) ? document.basePath.replace(/\/+$/, "") : "";
 
   for (const [path, pathItem] of Object.entries(paths)) {
     for (const method of METHODS) {
@@ -573,7 +573,7 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
         groupName,
         commandName,
         method,
-        path,
+        path: basePath + path,
         tags: operation.tags ?? [],
         summary: operation.summary ?? operation.description,
         hasBody: requestBodyInfo.hasBody,
