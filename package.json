@@ -1,10 +1,13 @@
 {
   "name": "@mehul_85345/agent-ready",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Generate agent-first CLIs and MCP servers from any OpenAPI spec — with safety rails, schema introspection, and prompt-injection sanitization.",
   "type": "module",
   "bin": {
     "agent-ready": "dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",
