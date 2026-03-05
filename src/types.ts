@@ -31,6 +31,8 @@ export interface CliOperation {
   bodySchemaHint?: string;
   auth?: CliAuth;
   parameters: CliParameter[];
+  bodySchema?: Record<string, unknown>;
+  responseSchema?: Record<string, unknown>;
 }
 
 export interface CliSpec {

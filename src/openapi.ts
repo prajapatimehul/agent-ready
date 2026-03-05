@@ -28,6 +28,7 @@ interface OpenApiOperation {
     content?: Record<string, unknown>;
     required?: boolean;
   } | OpenApiRef;
+  responses?: Record<string, unknown>;
   security?: Array<Record<string, string[]>>;
 }
 
@@ -283,22 +284,17 @@ function getPreferredContentType(contentTypes: string[]): string | undefined {
   return contentTypes[0];
 }
 
-function extractBodySchemaHint(
+function findBodySchema(
   requestBody: { content?: Record<string, unknown> } | null,
   document: OpenApiDocument,
   pathParams: OpenApiPathItem["parameters"],
   opParams: OpenApiOperation["parameters"]
-): string | undefined {
+): unknown | undefined {
   if (requestBody?.content) {
-    const contentTypes = Object.values(requestBody.content);
-    for (const ct of contentTypes) {
+    for (const ct of Object.values(requestBody.content)) {
       const schema = (ct as { schema?: unknown })?.schema;
-      if (schema && isRef(schema)) {
-        const refParts = (schema as OpenApiRef).$ref.split("/");
-        return refParts[refParts.length - 1];
-      }
-      if (schema && typeof schema === "object" && "type" in schema) {
-        return (schema as { type: string }).type;
+      if (schema) {
+        return schema;
       }
     }
   }
@@ -308,13 +304,132 @@ function extractBodySchemaHint(
     const param = resolveParameter(document, raw);
     if (param && param.in === "body") {
       const schema = (param as { schema?: unknown }).schema;
-      if (schema && isRef(schema)) {
-        const refParts = (schema as OpenApiRef).$ref.split("/");
-        return refParts[refParts.length - 1];
+      if (schema) {
+        return schema;
       }
-      if (schema && typeof schema === "object" && "type" in schema) {
-        return (schema as { type: string }).type;
+    }
+  }
+
+  return undefined;
+}
+
+function extractBodySchemaHint(
+  requestBody: { content?: Record<string, unknown> } | null,
+  document: OpenApiDocument,
+  pathParams: OpenApiPathItem["parameters"],
+  opParams: OpenApiOperation["parameters"]
+): string | undefined {
+  const schema = findBodySchema(requestBody, document, pathParams, opParams);
+  if (!schema) {
+    return undefined;
+  }
+  if (isRef(schema)) {
+    const refParts = (schema as OpenApiRef).$ref.split("/");
+    return refParts[refParts.length - 1];
+  }
+  if (typeof schema === "object" && "type" in schema) {
+    return (schema as { type: string }).type;
+  }
+  return undefined;
+}
+
+function resolveSchema(
+  document: OpenApiDocument,
+  schema: unknown,
+  visited?: Set<string>
+): Record<string, unknown> | undefined {
+  if (!schema || typeof schema !== "object") {
+    return undefined;
+  }
+
+  const safeVisited = visited ?? new Set<string>();
+
+  if (isRef(schema)) {
+    const ref = (schema as OpenApiRef).$ref;
+    if (safeVisited.has(ref)) {
+      return { $circular: ref } as Record<string, unknown>;
+    }
+    safeVisited.add(ref);
+    const resolved = resolveLocalRef(document, ref);
+    return resolveSchema(document, resolved, safeVisited);
+  }
+
+  const obj = schema as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+
+  if (obj.type) result.type = obj.type;
+  if (obj.format) result.format = obj.format;
+  if (obj.description) result.description = obj.description;
+  if (obj.enum) result.enum = obj.enum;
+  if (obj.required) result.required = obj.required;
+
+  if (obj.properties && typeof obj.properties === "object") {
+    const props: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(obj.properties as Record<string, unknown>)) {
+      props[key] = resolveSchema(document, value, safeVisited) ?? {};
+    }
+    result.properties = props;
+  }
+
+  if (obj.items) {
+    result.items = resolveSchema(document, obj.items, safeVisited);
+  }
+
+  for (const combiner of ["allOf", "oneOf", "anyOf"] as const) {
+    if (Array.isArray(obj[combiner])) {
+      result[combiner] = (obj[combiner] as unknown[]).map(
+        (s) => resolveSchema(document, s, safeVisited) ?? {}
+      );
+    }
+  }
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function extractBodySchema(
+  requestBody: { content?: Record<string, unknown> } | null,
+  document: OpenApiDocument,
+  pathParams: OpenApiPathItem["parameters"],
+  opParams: OpenApiOperation["parameters"]
+): Record<string, unknown> | undefined {
+  const schema = findBodySchema(requestBody, document, pathParams, opParams);
+  return schema ? resolveSchema(document, schema) : undefined;
+}
+
+function extractResponseSchema(
+  operation: OpenApiOperation,
+  document: OpenApiDocument
+): Record<string, unknown> | undefined {
+  const responses = operation.responses;
+  if (!responses || typeof responses !== "object") {
+    return undefined;
+  }
+
+  for (const code of ["200", "201", "default"]) {
+    const resp = responses[code];
+    if (!resp || typeof resp !== "object") {
+      continue;
+    }
+
+    const resolved = isRef(resp as unknown)
+      ? (resolveLocalRef(document, (resp as OpenApiRef).$ref) as Record<string, unknown>)
+      : (resp as Record<string, unknown>);
+
+    if (!resolved) continue;
+
+    const content = resolved.content as Record<string, unknown> | undefined;
+    if (content) {
+      for (const ct of Object.values(content)) {
+        const schema = (ct as { schema?: unknown })?.schema;
+        if (schema) {
+          return resolveSchema(document, schema);
+        }
       }
+    }
+
+    const schema = resolved.schema;
+    if (schema) {
+      return resolveSchema(document, schema);
     }
   }
 
@@ -448,6 +563,10 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
         ? extractBodySchemaHint(requestBody, document, pathItem.parameters, operation.parameters)
         : undefined;
       const auth = resolveOperationAuth(document, operation, securitySchemes);
+      const bodySchema = requestBodyInfo.hasBody
+        ? extractBodySchema(requestBody, document, pathItem.parameters, operation.parameters)
+        : undefined;
+      const responseSchema = extractResponseSchema(operation, document);
 
       operations.push({
         operationId,
@@ -461,7 +580,9 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
         requestContentType: requestBodyInfo.requestContentType,
         bodySchemaHint,
         auth,
-        parameters: params
+        parameters: params,
+        bodySchema,
+        responseSchema
       });
     }
   }

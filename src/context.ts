@@ -1,4 +1,6 @@
-import type { CliSpec } from "./types.js";
+import type { CliSpec, HttpMethod } from "./types.js";
+
+const MUTATING_METHODS: readonly HttpMethod[] = ["post", "put", "patch", "delete"];
 
 export function renderContextMd(spec: CliSpec, cliName: string): string {
   const groupCounts = new Map<string, number>();
@@ -33,12 +35,15 @@ ${cliName} <group> <command> [options]
 | \`--token <token>\` | Bearer token |
 | \`--api-key <key>\` | API key |
 | \`--basic <userpass>\` | Basic auth (user:pass) |
-| \`--output <format>\` | Output format: json\\|pretty (default: pretty) |
+| \`--output <format>\` | Output format: json\\|pretty (default: json in non-TTY, pretty in TTY) |
 | \`--config <path>\` | Path to config JSON with profiles |
 | \`--profile <name>\` | Profile name from config JSON |
 | \`--dry-run\` | Print HTTP request without executing |
 | \`--fields <fields>\` | Comma-separated response fields to include |
 | \`--json <payload>\` | Full request as JSON: {path, query, headers, body} |
+| \`--sanitize\` | Sanitize response strings to remove prompt-injection patterns |
+| \`--page-all\` | Follow Link rel=next pagination, emit NDJSON |
+| \`--help-json\` | Print all operations as machine-readable JSON |
 
 ## Introspection
 
@@ -61,6 +66,10 @@ ${groupBullets}
 - Use \`--fields\` to reduce response noise.
 - Use \`--json\` for programmatic request construction.
 - Use \`schema <group.command>\` to discover parameters.
+- For mutating operations (POST, PUT, PATCH, DELETE), always use \`--dry-run\` first and confirm with the user before executing.
+- Use \`--sanitize\` to strip prompt-injection patterns from responses.
+- Use \`--page-all\` for paginated endpoints to automatically follow all pages (emits NDJSON).
+- Use \`--help-json\` to get a machine-readable manifest of all operations.
 `;
 }
 
@@ -72,6 +81,9 @@ export function renderSkillMd(spec: CliSpec, cliName: string): string {
   const operationSections = spec.operations
     .map((op) => {
       const heading = `### \`${op.groupName}.${op.commandName}\``;
+      const mutatingBadge = (MUTATING_METHODS as readonly string[]).includes(op.method)
+        ? "\n> **Mutating** — use `--dry-run` to preview before executing.\n"
+        : "";
       const description = op.summary ?? `${op.method.toUpperCase()} ${op.path}`;
 
       let paramTable = "";
@@ -99,7 +111,7 @@ ${rows}`;
 
       const bodySection = bodyLines.length > 0 ? "\n" + bodyLines.join("\n") : "";
 
-      return `${heading}\n\n${description}\n${paramTable}${bodySection}`;
+      return `${heading}\n${mutatingBadge}\n${description}\n${paramTable}${bodySection}`;
     })
     .join("\n\n");
 

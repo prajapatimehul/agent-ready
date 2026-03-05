@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { CliAuth, CliOperation, CliParameter, CliSpec } from "./types.js";
+import { SANITIZE_TEMPLATE } from "./sanitize-template.js";
 
 function escapeForSingleQuote(value: string): string {
   return value
@@ -70,7 +71,9 @@ function renderOperationEntry(op: CliOperation): string {
     requestContentType: ${op.requestContentType ? `'${escapeForSingleQuote(op.requestContentType)}'` : "undefined"},
     bodySchemaHint: ${bodySchemaHint},
     auth: ${renderAuth(op.auth)},
-    parameters: ${renderParamsArray(op.parameters)}
+    parameters: ${renderParamsArray(op.parameters)},
+    bodySchema: ${op.bodySchema ? JSON.stringify(op.bodySchema) : "undefined"},
+    responseSchema: ${op.responseSchema ? JSON.stringify(op.responseSchema) : "undefined"}
   }`;
 }
 
@@ -286,6 +289,9 @@ function buildHeaders(operation, parameters, args) {
   return headers;
 }
 
+${SANITIZE_TEMPLATE}
+
+// MCP responses feed directly into LLMs — sanitize unconditionally
 async function executeOperation(operation, args) {
   if (!BASE_URL) {
     throw new Error('No base URL configured. Set AGENT_READY_BASE_URL environment variable.');
@@ -322,7 +328,7 @@ async function executeOperation(operation, args) {
     }, null, 2));
   }
 
-  return parsed;
+  return sanitizeResponse(parsed);
 }
 
 const server = new McpServer({

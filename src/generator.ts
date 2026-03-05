@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CliAuth, CliOperation, CliParameter, CliSpec } from "./types.js";
 import { renderContextMd, renderSkillMd } from "./context.js";
+import { SANITIZE_TEMPLATE } from "./sanitize-template.js";
 
 function escapeForSingleQuote(value: string): string {
   return value
@@ -75,7 +76,9 @@ function renderOperationEntry(op: CliOperation): string {
     requestContentType: ${op.requestContentType ? `'${escapeForSingleQuote(op.requestContentType)}'` : "undefined"},
     bodySchemaHint: ${bodySchemaHint},
     auth: ${renderAuth(op.auth)},
-    parameters: ${renderParamsArray(op.parameters)}
+    parameters: ${renderParamsArray(op.parameters)},
+    bodySchema: ${op.bodySchema ? JSON.stringify(op.bodySchema) : "undefined"},
+    responseSchema: ${op.responseSchema ? JSON.stringify(op.responseSchema) : "undefined"}
   }`;
 }
 
@@ -245,10 +248,12 @@ function resolveRuntimeSettings(globalOptions) {
   const output = globalOptions.output
     ?? process.env.AGENT_READY_OUTPUT
     ?? profile.output
-    ?? 'pretty';
+    ?? (process.stdout.isTTY ? 'pretty' : 'json');
 
   const dryRun = Boolean(globalOptions.dryRun);
   const fields = globalOptions.fields ?? null;
+  const sanitize = Boolean(globalOptions.sanitize);
+  const pageAll = Boolean(globalOptions.pageAll);
 
   return {
     baseUrl,
@@ -257,7 +262,9 @@ function resolveRuntimeSettings(globalOptions) {
     basic,
     output,
     dryRun,
-    fields
+    fields,
+    sanitize,
+    pageAll
   };
 }
 
@@ -503,6 +510,18 @@ function applyJsonPayload(commandOptions, parameters, jsonString) {
   return merged;
 }
 
+${SANITIZE_TEMPLATE}
+
+function parseLinkNext(linkHeader) {
+  if (!linkHeader) return null;
+  const parts = linkHeader.split(',');
+  for (const part of parts) {
+    const match = part.match(/<([^>]+)>\\s*;\\s*rel\\s*=\\s*"next"/);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 async function executeOperation(operation, commandOptions, globalOptions) {
   const runtime = resolveRuntimeSettings(globalOptions);
 
@@ -534,6 +553,36 @@ async function executeOperation(operation, commandOptions, globalOptions) {
     return;
   }
 
+  if (runtime.pageAll) {
+    let nextUrl = url;
+    while (nextUrl) {
+      const pageResponse = await fetch(nextUrl, init);
+      const pageCt = pageResponse.headers.get('content-type') ?? '';
+      const pageData = pageCt.includes('application/json')
+        ? await pageResponse.json()
+        : await pageResponse.text();
+
+      if (!pageResponse.ok) {
+        console.error(JSON.stringify({
+          error: 'Request failed',
+          status: pageResponse.status,
+          operationId: operation.operationId,
+          response: pageData
+        }, null, 2));
+        process.exitCode = 1;
+        return;
+      }
+
+      let result = filterFields(pageData, runtime.fields);
+      if (runtime.sanitize) result = sanitizeResponse(result);
+      console.log(JSON.stringify(result));
+
+      const linkHeader = pageResponse.headers.get('link');
+      nextUrl = parseLinkNext(linkHeader);
+    }
+    return;
+  }
+
   const response = await fetch(url, init);
   const contentType = response.headers.get('content-type') ?? '';
 
@@ -552,7 +601,9 @@ async function executeOperation(operation, commandOptions, globalOptions) {
     return;
   }
 
-  printResult(filterFields(parsed, runtime.fields), runtime.output);
+  let filtered = filterFields(parsed, runtime.fields);
+  if (runtime.sanitize) filtered = sanitizeResponse(filtered);
+  printResult(filtered, runtime.output);
 }
 
 ${registry}
@@ -566,12 +617,25 @@ program
   .option('--token <token>', 'Bearer token')
   .option('--api-key <key>', 'API key')
   .option('--basic <userpass>', 'Basic auth credentials as user:pass')
-  .option('--output <format>', 'Output format: json|pretty', 'pretty')
+  .option('--output <format>', 'Output format: json|pretty (default: json in non-TTY, pretty in TTY)')
   .option('--config <path>', 'Path to config JSON with profiles')
   .option('--profile <name>', 'Profile name from config JSON')
   .option('--dry-run', 'Print the HTTP request without executing it')
   .option('--fields <fields>', 'Comma-separated response fields to include')
-  .option('--json <payload>', 'Full request as JSON: {path, query, headers, body}');
+  .option('--json <payload>', 'Full request as JSON: {path, query, headers, body}')
+  .option('--sanitize', 'Sanitize response strings to remove prompt-injection patterns')
+  .option('--page-all', 'Follow Link rel=next pagination, emit NDJSON (one JSON per line)')
+  .option('--help-json', 'Print all operations as machine-readable JSON');
+
+if (process.argv.includes('--help-json')) {
+  console.log(JSON.stringify({
+    name: '${escapeForSingleQuote(cliName)}',
+    version: '${escapeForSingleQuote(spec.version)}',
+    description: '${escapeForSingleQuote(spec.title)}',
+    operations: OPERATIONS
+  }, null, 2));
+  process.exit(0);
+}
 
 ${groups}
 
