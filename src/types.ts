@@ -28,6 +28,7 @@ export interface CliOperation {
   summary?: string;
   hasBody: boolean;
   requestContentType?: string;
+  bodySchemaHint?: string;
   auth?: CliAuth;
   parameters: CliParameter[];
 }

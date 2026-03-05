@@ -1,11 +1,14 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { writeGeneratedCli } from "../src/generator.js";
 import { normalizeOpenApi, readOpenApiDocument } from "../src/openapi.js";
+import { renderContextMd, renderSkillMd } from "../src/context.js";
+import { renderMcpServer } from "../src/mcp-generator.js";
 import type { CliSpec } from "../src/types.js";
 
 const execFileAsync = promisify(execFile);
@@ -295,5 +298,735 @@ describe("Generated CLI", () => {
         resolve();
       });
     });
+  });
+});
+
+describe("--dry-run flag", () => {
+  it("prints HTTP request as JSON without calling fetch", async () => {
+    const doc = await readOpenApiDocument("examples/petstore/openapi.yaml");
+    const spec = normalizeOpenApi(doc);
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "pet-cli.js");
+    await writeGeneratedCli(spec, "pet-cli", output);
+
+    const result = await execFileAsync("node", [
+      output,
+      "pet",
+      "list-pets",
+      "--base-url",
+      "http://example.com",
+      "--dry-run"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.dryRun).toBe(true);
+    expect(parsed.method).toBe("GET");
+    expect(parsed.url).toBe("http://example.com/pets");
+    expect(parsed.headers).toBeDefined();
+  });
+
+  it("includes body in dry-run output", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "createItem",
+          groupName: "items",
+          commandName: "create",
+          method: "post",
+          path: "/items",
+          tags: [],
+          hasBody: true,
+          requestContentType: "application/json",
+          parameters: []
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    const result = await execFileAsync("node", [
+      output,
+      "items",
+      "create",
+      "--base-url",
+      "http://example.com",
+      "--body",
+      '{"name":"test"}',
+      "--dry-run"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.body).toBe('{"name":"test"}');
+  });
+});
+
+describe("--fields response filtering", () => {
+  it("filters object response by field names", async () => {
+    const doc = await readOpenApiDocument("examples/petstore/openapi.yaml");
+    const spec = normalizeOpenApi(doc);
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "pet-cli.js");
+    await writeGeneratedCli(spec, "pet-cli", output);
+
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "p-1", name: "Milo", species: "cat" }));
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected");
+
+    const result = await execFileAsync("node", [
+      output,
+      "pet",
+      "get-pet",
+      "--pet-id",
+      "p-1",
+      "--base-url",
+      `http://127.0.0.1:${address.port}`,
+      "--output",
+      "json",
+      "--fields",
+      "id,name"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed).toEqual({ id: "p-1", name: "Milo" });
+    expect(parsed.species).toBeUndefined();
+
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it("filters array responses", async () => {
+    const doc = await readOpenApiDocument("examples/petstore/openapi.yaml");
+    const spec = normalizeOpenApi(doc);
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "pet-cli.js");
+    await writeGeneratedCli(spec, "pet-cli", output);
+
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify([
+        { id: "1", name: "Milo", species: "cat" },
+        { id: "2", name: "Nova", species: "dog" }
+      ]));
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected");
+
+    const result = await execFileAsync("node", [
+      output,
+      "pet",
+      "list-pets",
+      "--base-url",
+      `http://127.0.0.1:${address.port}`,
+      "--output",
+      "json",
+      "--fields",
+      "id"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed).toEqual([{ id: "1" }, { id: "2" }]);
+
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it("supports dot-notation for nested fields", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items",
+          tags: [],
+          hasBody: false,
+          parameters: []
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: "1", meta: { created: "2024-01-01", updated: "2024-06-01" }, name: "Test" }));
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Unexpected");
+
+    const result = await execFileAsync("node", [
+      output,
+      "items",
+      "get",
+      "--base-url",
+      `http://127.0.0.1:${address.port}`,
+      "--output",
+      "json",
+      "--fields",
+      "id,meta.created"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed).toEqual({ id: "1", meta: { created: "2024-01-01" } });
+
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+});
+
+describe("Input hardening", () => {
+  it("rejects control characters in path parameters", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items/{itemId}",
+          tags: [],
+          hasBody: false,
+          parameters: [
+            { name: "itemId", cliName: "item-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    try {
+      await execFileAsync("node", [
+        output,
+        "items",
+        "get",
+        "--item-id",
+        "abc\x01def",
+        "--base-url",
+        "http://example.com",
+        "--dry-run"
+      ]);
+      expect.fail("Should have thrown");
+    } catch (error: unknown) {
+      expect((error as { stderr: string }).stderr).toContain("Invalid control character");
+    }
+  });
+
+  it("rejects ? # % in path parameters", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items/{itemId}",
+          tags: [],
+          hasBody: false,
+          parameters: [
+            { name: "itemId", cliName: "item-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    for (const char of ["?", "#", "%"]) {
+      try {
+        await execFileAsync("node", [
+          output,
+          "items",
+          "get",
+          "--item-id",
+          `abc${char}def`,
+          "--base-url",
+          "http://example.com",
+          "--dry-run"
+        ]);
+        expect.fail(`Should have thrown for ${char}`);
+      } catch (error: unknown) {
+        expect((error as { stderr: string }).stderr).toContain("Invalid character");
+      }
+    }
+  });
+
+  it("rejects path traversal attempts", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items/{itemId}",
+          tags: [],
+          hasBody: false,
+          parameters: [
+            { name: "itemId", cliName: "item-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    try {
+      await execFileAsync("node", [
+        output,
+        "items",
+        "get",
+        "--item-id",
+        "../etc/passwd",
+        "--base-url",
+        "http://example.com",
+        "--dry-run"
+      ]);
+      expect.fail("Should have thrown");
+    } catch (error: unknown) {
+      expect((error as { stderr: string }).stderr).toContain("Path traversal");
+    }
+  });
+
+  it("allows valid parameter values", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items/{itemId}",
+          tags: [],
+          hasBody: false,
+          parameters: [
+            { name: "itemId", cliName: "item-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    const result = await execFileAsync("node", [
+      output,
+      "items",
+      "get",
+      "--item-id",
+      "valid-id-123",
+      "--base-url",
+      "http://example.com",
+      "--dry-run"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.url).toBe("http://example.com/items/valid-id-123");
+  });
+});
+
+describe("--json payload flag", () => {
+  it("accepts path params via --json", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items/{itemId}",
+          tags: [],
+          hasBody: false,
+          parameters: [
+            { name: "itemId", cliName: "item-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    const result = await execFileAsync("node", [
+      output,
+      "items",
+      "get",
+      "--item-id",
+      "placeholder",
+      "--json",
+      '{"path":{"itemId":"abc-123"}}',
+      "--base-url",
+      "http://example.com",
+      "--dry-run"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    // --json overrides the --item-id flag
+    expect(parsed.url).toBe("http://example.com/items/abc-123");
+  });
+
+  it("accepts body via --json", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "createItem",
+          groupName: "items",
+          commandName: "create",
+          method: "post",
+          path: "/items",
+          tags: [],
+          hasBody: true,
+          requestContentType: "application/json",
+          parameters: []
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    const result = await execFileAsync("node", [
+      output,
+      "items",
+      "create",
+      "--json",
+      '{"body":{"name":"test","value":42}}',
+      "--base-url",
+      "http://example.com",
+      "--dry-run"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.body).toBe('{"name":"test","value":42}');
+  });
+
+  it("--json takes precedence over individual flags", async () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items/{itemId}",
+          tags: [],
+          hasBody: false,
+          parameters: [
+            { name: "itemId", cliName: "item-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "test-cli.js");
+    await writeGeneratedCli(spec, "test-cli", output);
+
+    const result = await execFileAsync("node", [
+      output,
+      "items",
+      "get",
+      "--item-id",
+      "from-flag",
+      "--json",
+      '{"path":{"itemId":"from-json"}}',
+      "--base-url",
+      "http://example.com",
+      "--dry-run"
+    ]);
+
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.url).toBe("http://example.com/items/from-json");
+  });
+});
+
+describe("schema introspection command", () => {
+  it("prints operation metadata as JSON", async () => {
+    const doc = await readOpenApiDocument("examples/petstore/openapi.yaml");
+    const spec = normalizeOpenApi(doc);
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "pet-cli.js");
+    await writeGeneratedCli(spec, "pet-cli", output);
+
+    const result = await execFileAsync("node", [output, "schema", "pet.list-pets"]);
+    const parsed = JSON.parse(result.stdout);
+
+    expect(parsed.method).toBe("GET");
+    expect(parsed.path).toBe("/pets");
+    expect(parsed.operationId).toBe("listPets");
+    expect(parsed.parameters).toBeDefined();
+  });
+
+  it("lists available operations on unknown name", async () => {
+    const doc = await readOpenApiDocument("examples/petstore/openapi.yaml");
+    const spec = normalizeOpenApi(doc);
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "pet-cli.js");
+    await writeGeneratedCli(spec, "pet-cli", output);
+
+    try {
+      await execFileAsync("node", [output, "schema", "nonexistent.op"]);
+      expect.fail("Should have thrown");
+    } catch (error: unknown) {
+      const stderr = (error as { stderr: string }).stderr;
+      expect(stderr).toContain("Unknown operation");
+      expect(stderr).toContain("pet.list-pets");
+    }
+  });
+});
+
+describe("bodySchemaHint extraction", () => {
+  it("extracts schema name from $ref in requestBody", () => {
+    const spec = normalizeOpenApi({
+      openapi: "3.0.0",
+      info: { title: "Test", version: "1.0.0" },
+      paths: {
+        "/items": {
+          post: {
+            operationId: "createItem",
+            tags: ["items"],
+            requestBody: {
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/CreateItemRequest" }
+                }
+              }
+            }
+          }
+        }
+      },
+      components: {
+        schemas: {
+          CreateItemRequest: { type: "object" }
+        }
+      }
+    });
+
+    expect(spec.operations[0]?.bodySchemaHint).toBe("CreateItemRequest");
+  });
+
+  it("extracts type when no $ref", () => {
+    const spec = normalizeOpenApi({
+      openapi: "3.0.0",
+      info: { title: "Test", version: "1.0.0" },
+      paths: {
+        "/items": {
+          post: {
+            operationId: "createItem",
+            tags: ["items"],
+            requestBody: {
+              content: {
+                "application/json": {
+                  schema: { type: "object" }
+                }
+              }
+            }
+          }
+        }
+      }
+    });
+
+    expect(spec.operations[0]?.bodySchemaHint).toBe("object");
+  });
+});
+
+describe("CONTEXT.md + SKILL.md generation", () => {
+  it("renderContextMd includes key sections", () => {
+    const spec: CliSpec = {
+      title: "Pet API",
+      version: "1.0.0",
+      defaultServer: "http://localhost:4010",
+      operations: [
+        {
+          operationId: "listPets",
+          groupName: "pet",
+          commandName: "list-pets",
+          method: "get",
+          path: "/pets",
+          tags: ["pet"],
+          summary: "List all pets",
+          hasBody: false,
+          parameters: []
+        },
+        {
+          operationId: "createPet",
+          groupName: "pet",
+          commandName: "create-pet",
+          method: "post",
+          path: "/pets",
+          tags: ["pet"],
+          summary: "Create a pet",
+          hasBody: true,
+          requestContentType: "application/json",
+          parameters: []
+        }
+      ]
+    };
+
+    const md = renderContextMd(spec, "pet-cli");
+    expect(md).toContain("# pet-cli");
+    expect(md).toContain("Pet API");
+    expect(md).toContain("--dry-run");
+    expect(md).toContain("--fields");
+    expect(md).toContain("--json");
+    expect(md).toContain("schema");
+    expect(md).toContain("pet");
+    expect(md).toContain("--output json");
+  });
+
+  it("renderSkillMd includes operations and parameters", () => {
+    const spec: CliSpec = {
+      title: "Pet API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getPet",
+          groupName: "pet",
+          commandName: "get-pet",
+          method: "get",
+          path: "/pets/{petId}",
+          tags: ["pet"],
+          summary: "Get a pet by ID",
+          hasBody: false,
+          parameters: [
+            { name: "petId", cliName: "pet-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+
+    const md = renderSkillMd(spec, "pet-cli");
+    expect(md).toContain("pet-cli");
+    expect(md).toContain("pet.get-pet");
+    expect(md).toContain("pet-id");
+    expect(md).toContain("path");
+    expect(md).toContain("Get a pet by ID");
+  });
+
+  it("writes context files alongside CLI", async () => {
+    const doc = await readOpenApiDocument("examples/petstore/openapi.yaml");
+    const spec = normalizeOpenApi(doc);
+    const tempDir = await mkdtemp(join(process.cwd(), ".tmp-agent-ready-"));
+    const output = join(tempDir, "pet-cli.js");
+    await writeGeneratedCli(spec, "pet-cli", output);
+
+    expect(existsSync(join(tempDir, "pet-cli-CONTEXT.md"))).toBe(true);
+    expect(existsSync(join(tempDir, "pet-cli-SKILL.md"))).toBe(true);
+
+    const context = await readFile(join(tempDir, "pet-cli-CONTEXT.md"), "utf8");
+    expect(context).toContain("pet-cli");
+
+    const skill = await readFile(join(tempDir, "pet-cli-SKILL.md"), "utf8");
+    expect(skill).toContain("pet-cli");
+  });
+});
+
+describe("MCP server generation", () => {
+  it("renderMcpServer contains tool registrations", () => {
+    const spec: CliSpec = {
+      title: "Pet API",
+      version: "1.0.0",
+      defaultServer: "http://localhost:4010",
+      operations: [
+        {
+          operationId: "listPets",
+          groupName: "pet",
+          commandName: "list-pets",
+          method: "get",
+          path: "/pets",
+          tags: ["pet"],
+          summary: "List all pets",
+          hasBody: false,
+          parameters: []
+        },
+        {
+          operationId: "createPet",
+          groupName: "pet",
+          commandName: "create-pet",
+          method: "post",
+          path: "/pets",
+          tags: ["pet"],
+          summary: "Create a pet",
+          hasBody: true,
+          requestContentType: "application/json",
+          parameters: []
+        }
+      ]
+    };
+
+    const code = renderMcpServer(spec, "pet-cli");
+    expect(code).toContain("McpServer");
+    expect(code).toContain("StdioServerTransport");
+    expect(code).toContain("pet_list-pets");
+    expect(code).toContain("pet_create-pet");
+    expect(code).toContain("List all pets");
+    expect(code).toContain("OPERATIONS");
+  });
+
+  it("generates valid JSON schema for parameters", () => {
+    const spec: CliSpec = {
+      title: "Test API",
+      version: "1.0.0",
+      operations: [
+        {
+          operationId: "getItem",
+          groupName: "items",
+          commandName: "get",
+          method: "get",
+          path: "/items/{itemId}",
+          tags: [],
+          summary: "Get item",
+          hasBody: false,
+          parameters: [
+            { name: "itemId", cliName: "item-id", in: "path", required: true, isArray: false }
+          ]
+        }
+      ]
+    };
+
+    const code = renderMcpServer(spec, "test-cli");
+    expect(code).toContain("itemId");
+    expect(code).toContain("required");
   });
 });

@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { CliAuth, CliOperation, CliParameter, CliSpec } from "./types.js";
+import { renderContextMd, renderSkillMd } from "./context.js";
 
 function escapeForSingleQuote(value: string): string {
   return value
@@ -57,6 +58,32 @@ function renderAuth(auth: CliAuth | undefined): string {
   return `{ ${lines.join(", ")} }`;
 }
 
+function operationKey(op: CliOperation): string {
+  return `${op.groupName}.${op.commandName}`;
+}
+
+function renderOperationEntry(op: CliOperation): string {
+  const summary = escapeForSingleQuote(op.summary ?? `${op.method.toUpperCase()} ${op.path}`);
+  const bodySchemaHint = op.bodySchemaHint ? `'${escapeForSingleQuote(op.bodySchemaHint)}'` : "undefined";
+
+  return `  '${escapeForSingleQuote(operationKey(op))}': {
+    operationId: '${escapeForSingleQuote(op.operationId)}',
+    method: '${op.method.toUpperCase()}',
+    path: '${escapeForSingleQuote(op.path)}',
+    summary: '${summary}',
+    hasBody: ${op.hasBody},
+    requestContentType: ${op.requestContentType ? `'${escapeForSingleQuote(op.requestContentType)}'` : "undefined"},
+    bodySchemaHint: ${bodySchemaHint},
+    auth: ${renderAuth(op.auth)},
+    parameters: ${renderParamsArray(op.parameters)}
+  }`;
+}
+
+function renderOperationRegistry(operations: CliOperation[]): string {
+  const entries = operations.map(renderOperationEntry).join(",\n");
+  return `const OPERATIONS = {\n${entries}\n};\n`;
+}
+
 function renderOperation(op: CliOperation): string {
   const optionLines = op.parameters
     .map((param) => {
@@ -68,6 +95,7 @@ function renderOperation(op: CliOperation): string {
 
   const bodyOption = op.hasBody ? "\n    command.option('--body <value>', 'Request body string');" : "";
   const summary = escapeForSingleQuote(op.summary ?? `${op.method.toUpperCase()} ${op.path}`);
+  const key = escapeForSingleQuote(operationKey(op));
 
   return `
   {
@@ -76,17 +104,7 @@ function renderOperation(op: CliOperation): string {
 ${optionLines}${bodyOption}
 
     command.action(async (opts, cmd) => {
-      const operation = {
-        operationId: '${escapeForSingleQuote(op.operationId)}',
-        method: '${op.method.toUpperCase()}',
-        path: '${escapeForSingleQuote(op.path)}',
-        hasBody: ${op.hasBody},
-        requestContentType: ${op.requestContentType ? `'${escapeForSingleQuote(op.requestContentType)}'` : "undefined"},
-        auth: ${renderAuth(op.auth)},
-        parameters: ${renderParamsArray(op.parameters)}
-      };
-
-      await executeOperation(operation, opts, cmd.optsWithGlobals());
+      await executeOperation(OPERATIONS['${key}'], opts, cmd.optsWithGlobals());
     });
   }
 `;
@@ -117,8 +135,30 @@ ${renderedOperations}
     .join("\n");
 }
 
+function renderSchemaCommand(): string {
+  return `
+{
+  const schemaCmd = program.command('schema');
+  schemaCmd.description('Print operation metadata as JSON');
+  schemaCmd.argument('<operation>', 'Operation as group.command');
+  schemaCmd.action((name) => {
+    const op = OPERATIONS[name];
+    if (!op) {
+      const available = Object.keys(OPERATIONS).join(', ');
+      console.error('Unknown operation: ' + name + '\\nAvailable: ' + available);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify(op, null, 2));
+  });
+}
+`;
+}
+
 function renderProgram(spec: CliSpec, cliName: string): string {
+  const registry = renderOperationRegistry(spec.operations);
   const groups = renderGroups(spec.operations);
+  const schemaCommand = renderSchemaCommand();
   const defaultServer = spec.defaultServer ? `'${escapeForSingleQuote(spec.defaultServer)}'` : "undefined";
 
   return `#!/usr/bin/env node
@@ -207,19 +247,49 @@ function resolveRuntimeSettings(globalOptions) {
     ?? profile.output
     ?? 'pretty';
 
+  const dryRun = Boolean(globalOptions.dryRun);
+  const fields = globalOptions.fields ?? null;
+
   return {
     baseUrl,
     token,
     apiKey,
     basic,
-    output
+    output,
+    dryRun,
+    fields
   };
+}
+
+function rejectControlChars(value, flagName) {
+  const str = String(value);
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code < 0x20 && code !== 0x09) {
+      throw new Error('Invalid control character in ' + flagName + ' (charCode ' + code + ')');
+    }
+  }
+}
+
+function validateResourceId(value, flagName) {
+  rejectControlChars(value, flagName);
+  const str = String(value);
+  if (/[?#%]/.test(str)) {
+    throw new Error('Invalid character in ' + flagName + ': must not contain ?, #, or %');
+  }
+  const segments = str.split('/');
+  for (const seg of segments) {
+    if (seg === '.' || seg === '..') {
+      throw new Error('Path traversal not allowed in ' + flagName);
+    }
+  }
 }
 
 function normalizePath(pathTemplate, commandOptions, parameters) {
   let path = pathTemplate;
   for (const param of parameters.filter((p) => p.in === 'path')) {
     const value = getOptionValue(commandOptions, param.cliName);
+    validateResourceId(value, '--' + param.cliName);
     path = path.replace(
       new RegExp('\\\\{' + param.name + '\\\\}', 'g'),
       encodeURIComponent(String(value))
@@ -255,6 +325,9 @@ function buildQuery(operation, parameters, commandOptions, runtime) {
 
   for (const param of parameters.filter((p) => p.in === 'query')) {
     const value = getOptionValue(commandOptions, param.cliName);
+    if (value !== undefined && value !== null) {
+      rejectControlChars(value, '--' + param.cliName);
+    }
     appendQueryValues(searchParams, param.name, value, param.isArray);
   }
 
@@ -303,6 +376,7 @@ function buildHeaders(operation, parameters, commandOptions, runtime) {
   for (const param of parameters.filter((p) => p.in === 'header')) {
     const value = getOptionValue(commandOptions, param.cliName);
     if (value !== undefined) {
+      rejectControlChars(value, '--' + param.cliName);
       headers[param.name] = String(value);
     }
   }
@@ -319,6 +393,60 @@ function buildHeaders(operation, parameters, commandOptions, runtime) {
   }
 
   return headers;
+}
+
+function getNestedValue(obj, path) {
+  let current = obj;
+  for (const key of path.split('.')) {
+    if (current === null || current === undefined || typeof current !== 'object') {
+      return undefined;
+    }
+    current = current[key];
+  }
+  return current;
+}
+
+function setNestedValue(obj, path, value) {
+  const keys = path.split('.');
+  let current = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (current[keys[i]] === undefined) {
+      current[keys[i]] = {};
+    }
+    current = current[keys[i]];
+  }
+  current[keys[keys.length - 1]] = value;
+}
+
+function filterFields(data, fieldList) {
+  if (!fieldList) {
+    return data;
+  }
+
+  const fields = fieldList.split(',').map((f) => f.trim()).filter(Boolean);
+  if (fields.length === 0) {
+    return data;
+  }
+
+  function filterOne(item) {
+    if (item === null || item === undefined || typeof item !== 'object') {
+      return item;
+    }
+    const result = {};
+    for (const field of fields) {
+      const value = getNestedValue(item, field);
+      if (value !== undefined) {
+        setNestedValue(result, field, value);
+      }
+    }
+    return result;
+  }
+
+  if (Array.isArray(data)) {
+    return data.map(filterOne);
+  }
+
+  return filterOne(data);
 }
 
 function printResult(data, format) {
@@ -340,8 +468,48 @@ function printResult(data, format) {
   console.log(data);
 }
 
+function applyJsonPayload(commandOptions, parameters, jsonString) {
+  const payload = JSON.parse(jsonString);
+  const merged = Object.assign({}, commandOptions);
+
+  if (payload.path && typeof payload.path === 'object') {
+    for (const param of parameters.filter((p) => p.in === 'path')) {
+      if (payload.path[param.name] !== undefined) {
+        merged[param.cliName] = payload.path[param.name];
+      }
+    }
+  }
+
+  if (payload.query && typeof payload.query === 'object') {
+    for (const param of parameters.filter((p) => p.in === 'query')) {
+      if (payload.query[param.name] !== undefined) {
+        merged[param.cliName] = payload.query[param.name];
+      }
+    }
+  }
+
+  if (payload.headers && typeof payload.headers === 'object') {
+    for (const param of parameters.filter((p) => p.in === 'header')) {
+      if (payload.headers[param.name] !== undefined) {
+        merged[param.cliName] = payload.headers[param.name];
+      }
+    }
+  }
+
+  if (payload.body !== undefined) {
+    merged.body = typeof payload.body === 'object' ? JSON.stringify(payload.body) : payload.body;
+  }
+
+  return merged;
+}
+
 async function executeOperation(operation, commandOptions, globalOptions) {
   const runtime = resolveRuntimeSettings(globalOptions);
+
+  if (globalOptions.json) {
+    commandOptions = applyJsonPayload(commandOptions, operation.parameters, globalOptions.json);
+  }
+
   if (!runtime.baseUrl) {
     throw new Error('No base URL configured. Use --base-url, env AGENT_READY_BASE_URL, or config profile.');
   }
@@ -359,6 +527,11 @@ async function executeOperation(operation, commandOptions, globalOptions) {
   if (operation.hasBody && commandOptions.body !== undefined) {
     headers['Content-Type'] = operation.requestContentType ?? 'application/json';
     init.body = commandOptions.body;
+  }
+
+  if (runtime.dryRun) {
+    console.log(JSON.stringify({ dryRun: true, method: init.method, url, headers: init.headers, body: init.body ?? null }, null, 2));
+    return;
   }
 
   const response = await fetch(url, init);
@@ -379,9 +552,10 @@ async function executeOperation(operation, commandOptions, globalOptions) {
     return;
   }
 
-  printResult(parsed, runtime.output);
+  printResult(filterFields(parsed, runtime.fields), runtime.output);
 }
 
+${registry}
 const program = new Command();
 
 program
@@ -394,9 +568,14 @@ program
   .option('--basic <userpass>', 'Basic auth credentials as user:pass')
   .option('--output <format>', 'Output format: json|pretty', 'pretty')
   .option('--config <path>', 'Path to config JSON with profiles')
-  .option('--profile <name>', 'Profile name from config JSON');
+  .option('--profile <name>', 'Profile name from config JSON')
+  .option('--dry-run', 'Print the HTTP request without executing it')
+  .option('--fields <fields>', 'Comma-separated response fields to include')
+  .option('--json <payload>', 'Full request as JSON: {path, query, headers, body}');
 
 ${groups}
+
+${schemaCommand}
 
 program.parseAsync(process.argv).catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -405,8 +584,18 @@ program.parseAsync(process.argv).catch((error) => {
 `;
 }
 
-export async function writeGeneratedCli(spec: CliSpec, cliName: string, outPath: string): Promise<void> {
+export interface GenerateOptions {
+  noContext?: boolean;
+}
+
+export async function writeGeneratedCli(spec: CliSpec, cliName: string, outPath: string, options?: GenerateOptions): Promise<void> {
   const output = renderProgram(spec, cliName);
-  await mkdir(dirname(outPath), { recursive: true });
+  const dir = dirname(outPath);
+  await mkdir(dir, { recursive: true });
   await writeFile(outPath, output, { encoding: "utf8", mode: 0o755 });
+
+  if (!options?.noContext) {
+    await writeFile(join(dir, `${cliName}-CONTEXT.md`), renderContextMd(spec, cliName), "utf8");
+    await writeFile(join(dir, `${cliName}-SKILL.md`), renderSkillMd(spec, cliName), "utf8");
+  }
 }

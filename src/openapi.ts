@@ -283,6 +283,44 @@ function getPreferredContentType(contentTypes: string[]): string | undefined {
   return contentTypes[0];
 }
 
+function extractBodySchemaHint(
+  requestBody: { content?: Record<string, unknown> } | null,
+  document: OpenApiDocument,
+  pathParams: OpenApiPathItem["parameters"],
+  opParams: OpenApiOperation["parameters"]
+): string | undefined {
+  if (requestBody?.content) {
+    const contentTypes = Object.values(requestBody.content);
+    for (const ct of contentTypes) {
+      const schema = (ct as { schema?: unknown })?.schema;
+      if (schema && isRef(schema)) {
+        const refParts = (schema as OpenApiRef).$ref.split("/");
+        return refParts[refParts.length - 1];
+      }
+      if (schema && typeof schema === "object" && "type" in schema) {
+        return (schema as { type: string }).type;
+      }
+    }
+  }
+
+  const allParams = [...(pathParams ?? []), ...(opParams ?? [])];
+  for (const raw of allParams) {
+    const param = resolveParameter(document, raw);
+    if (param && param.in === "body") {
+      const schema = (param as { schema?: unknown }).schema;
+      if (schema && isRef(schema)) {
+        const refParts = (schema as OpenApiRef).$ref.split("/");
+        return refParts[refParts.length - 1];
+      }
+      if (schema && typeof schema === "object" && "type" in schema) {
+        return (schema as { type: string }).type;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function resolveRequestContentType(
   requestBody: { content?: Record<string, unknown> } | null,
   hasSwagger2Body: boolean,
@@ -406,6 +444,9 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
       const requestBody = resolveRequestBody(document, operation.requestBody);
       const hasSwagger2Body = hasSwagger2BodyParam(document, pathItem.parameters, operation.parameters);
       const requestBodyInfo = resolveRequestContentType(requestBody, hasSwagger2Body, operation.consumes, globalConsumes);
+      const bodySchemaHint = requestBodyInfo.hasBody
+        ? extractBodySchemaHint(requestBody, document, pathItem.parameters, operation.parameters)
+        : undefined;
       const auth = resolveOperationAuth(document, operation, securitySchemes);
 
       operations.push({
@@ -418,6 +459,7 @@ export function normalizeOpenApi(document: OpenApiDocument): CliSpec {
         summary: operation.summary ?? operation.description,
         hasBody: requestBodyInfo.hasBody,
         requestContentType: requestBodyInfo.requestContentType,
+        bodySchemaHint,
         auth,
         parameters: params
       });
