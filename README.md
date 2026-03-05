@@ -2,6 +2,30 @@
 
 Generate **agent-first CLIs** from any OpenAPI spec — with built-in safety rails, schema introspection, and MCP server generation.
 
+## Copy-Paste Prompt for AI Agents
+
+Drop this into Claude Code, Codex, or any coding agent. Replace the placeholder with your OpenAPI spec path or URL. The agent will do everything — no docs needed.
+
+```
+Clone https://github.com/prajapatimehul/agent-ready and generate a CLI from my OpenAPI spec.
+
+Steps:
+1. git clone https://github.com/prajapatimehul/agent-ready && cd agent-ready && npm install && npm run build
+2. Generate CLI: node dist/index.js generate --spec <PATH_TO_MY_OPENAPI_SPEC> --name my-cli --out generated/my-cli.js
+3. Run: node generated/my-cli.js --help-json   (to see all available operations)
+4. Test every API group using: node generated/my-cli.js <group> <command> --base-url <MY_API_URL> --output json
+5. Use --dry-run on mutating operations (POST/PUT/PATCH/DELETE) before executing
+6. Use schema <group.command> to inspect parameters and body schema for any operation
+7. Use --fields to limit response size and --sanitize for safety
+
+Auth options: --token <bearer>, --api-key <key>, --basic <user:pass>
+Or set env vars: AGENT_READY_TOKEN, AGENT_READY_API_KEY, AGENT_READY_BASE_URL
+
+Test at least 10-15 operations across different groups. Report which ones work and which fail.
+```
+
+---
+
 One command turns your API spec into a fully-featured CLI that both humans and AI agents can use:
 
 ```bash
@@ -30,39 +54,23 @@ AI agents are increasingly the primary consumers of CLIs. They don't need GUIs �
 
 ## Battle-Tested
 
-Generated CLIs have been validated against **5 real-world open source SaaS platforms** with **973 operations** and **189 live API tests**:
+Generated CLIs have been validated against **11 real-world open-source SaaS platforms** with **2,012 operations**:
 
-| SaaS | Spec Format | Operations | Tests | Pass Rate |
-|------|------------|------------|-------|-----------|
-| [Gitea](https://gitea.io) (Git hosting) | Swagger 2.0 | 467 | 37 | 100% |
-| [Lago](https://getlago.com) (Billing) | OpenAPI 3.1.0 | 156 | 31 | 97% |
-| [Unleash](https://getunleash.io) (Feature flags) | OpenAPI 3.0 | 167 | 34 | 100% |
-| [Directus](https://directus.io) (Headless CMS) | OpenAPI 3.0 | 126 | 50 | 94% |
-| [Memos](https://usememos.com) (Notes) | OpenAPI 3.0.3 | 57 | 37 | 95% |
+| SaaS | Category | Spec Format | Operations | Groups |
+|------|----------|-------------|-----------|--------|
+| [Mattermost](https://mattermost.com) (Slack alternative) | Communication | OpenAPI 3.0 | 425 | 40 |
+| [Gitea](https://gitea.io) (Git hosting) | DevOps | Swagger 2.0 | 467 | 37 |
+| [Kill Bill](https://killbill.io) (Billing) | Payments | Swagger 2.0 | 249 | 23 |
+| [Lago](https://getlago.com) (Billing) | Payments | OpenAPI 3.1.0 | 156 | — |
+| [Unleash](https://getunleash.io) (Feature flags) | DevOps | OpenAPI 3.0 | 167 | — |
+| [Vikunja](https://vikunja.io) (Task management) | Productivity | Swagger 2.0 | 147 | 15 |
+| [Chatwoot](https://chatwoot.com) (Customer engagement) | Communication | OpenAPI 3.0.4 | 137 | 30 |
+| [Directus](https://directus.io) (Headless CMS) | CMS | OpenAPI 3.0 | 126 | — |
+| [GrowthBook](https://growthbook.io) (A/B testing) | Analytics | OpenAPI 3.1.0 | 121 | 27 |
+| [Coolify](https://coolify.io) (Self-hosting) | Deployment | OpenAPI 3.1.0 | 107 | 16 |
+| [Memos](https://usememos.com) (Notes) | Productivity | OpenAPI 3.0.3 | 57 | — |
 
-OpenAPI specs for all 5 are included in `examples/` so you can reproduce these results.
-
-## Copy-Paste Prompt for AI Agents
-
-Drop this into Claude Code, Codex, or any coding agent. Replace the placeholder with your OpenAPI spec path or URL. The agent will do everything — no docs needed.
-
-```
-Clone https://github.com/prajapatimehul/agent-ready and generate a CLI from my OpenAPI spec.
-
-Steps:
-1. git clone https://github.com/prajapatimehul/agent-ready && cd agent-ready && npm install && npm run build
-2. Generate CLI: node dist/index.js generate --spec <PATH_TO_MY_OPENAPI_SPEC> --name my-cli --out generated/my-cli.js
-3. Run: node generated/my-cli.js --help-json   (to see all available operations)
-4. Test every API group using: node generated/my-cli.js <group> <command> --base-url <MY_API_URL> --output json
-5. Use --dry-run on mutating operations (POST/PUT/PATCH/DELETE) before executing
-6. Use schema <group.command> to inspect parameters and body schema for any operation
-7. Use --fields to limit response size and --sanitize for safety
-
-Auth options: --token <bearer>, --api-key <key>, --basic <user:pass>
-Or set env vars: AGENT_READY_TOKEN, AGENT_READY_API_KEY, AGENT_READY_BASE_URL
-
-Test at least 10-15 operations across different groups. Report which ones work and which fail.
-```
+OpenAPI specs for all 11 are included in `examples/` so you can reproduce these results.
 
 ## Quick Start
 
@@ -94,8 +102,11 @@ node dist/index.js generate --spec path/to/openapi.yaml --name my-api --out gene
 
 # From any of the included real-world specs
 node dist/index.js generate --spec examples/gitea/openapi.json --name gitea --out generated/gitea.js
-node dist/index.js generate --spec examples/lago/openapi.yaml --name lago --out generated/lago.js
-node dist/index.js generate --spec examples/unleash/openapi.json --name unleash --out generated/unleash.js
+node dist/index.js generate --spec examples/mattermost/openapi.yaml --name mattermost --out generated/mattermost.js
+node dist/index.js generate --spec examples/killbill/swagger.json --name killbill --out generated/killbill.js
+node dist/index.js generate --spec examples/chatwoot/openapi.json --name chatwoot --out generated/chatwoot.js
+node dist/index.js generate --spec examples/coolify/openapi.yaml --name coolify --out generated/coolify.js
+node dist/index.js generate --spec examples/growthbook/openapi.yaml --name growthbook --out generated/growthbook.js
 ```
 
 Supports **OpenAPI 3.0/3.1** and **Swagger 2.0** specs in YAML or JSON.
