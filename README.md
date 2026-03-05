@@ -42,6 +42,28 @@ Generated CLIs have been validated against **5 real-world open source SaaS platf
 
 OpenAPI specs for all 5 are included in `examples/` so you can reproduce these results.
 
+## Copy-Paste Prompt for AI Agents
+
+Drop this into Claude Code, Codex, or any coding agent. Replace the placeholder with your OpenAPI spec path or URL. The agent will do everything — no docs needed.
+
+```
+Clone https://github.com/prajapatimehul/agent-ready and generate a CLI from my OpenAPI spec.
+
+Steps:
+1. git clone https://github.com/prajapatimehul/agent-ready && cd agent-ready && npm install && npm run build
+2. Generate CLI: node dist/index.js generate --spec <PATH_TO_MY_OPENAPI_SPEC> --name my-cli --out generated/my-cli.js
+3. Run: node generated/my-cli.js --help-json   (to see all available operations)
+4. Test every API group using: node generated/my-cli.js <group> <command> --base-url <MY_API_URL> --output json
+5. Use --dry-run on mutating operations (POST/PUT/PATCH/DELETE) before executing
+6. Use schema <group.command> to inspect parameters and body schema for any operation
+7. Use --fields to limit response size and --sanitize for safety
+
+Auth options: --token <bearer>, --api-key <key>, --basic <user:pass>
+Or set env vars: AGENT_READY_TOKEN, AGENT_READY_API_KEY, AGENT_READY_BASE_URL
+
+Test at least 10-15 operations across different groups. Report which ones work and which fail.
+```
+
 ## Quick Start
 
 ```bash
